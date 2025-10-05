@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPT Partner Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="auth-container">
+    <h2>Connect to Agent</h2>
+    <p>Please provide a Firebase ID token to connect.</p>
+    <input type="text" id="token-input" placeholder="Enter Firebase ID Token">
+    <button id="connect-button">Connect</button>
+  </div>
+
+  <div id="chat-container" class="hidden">
+    <div id="chat-window">
+      <div id="messages"></div>
+    </div>
+    <form id="chat-form">
+      <input type="text" id="message-input" placeholder="Ask about our partners..." autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>
