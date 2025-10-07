@@ -1,25 +1,32 @@
+// Auth elements
 const authContainer = document.getElementById('auth-container');
 const connectButton = document.getElementById('connect-button');
 const tokenInput = document.getElementById('token-input');
 
-const chatContainer = document.getElementById('chat-container');
-const chatWindow = document.getElementById('chat-window');
-const messages = document.getElementById('messages');
-const chatForm = document.getElementById('chat-form');
-const messageInput = document.getElementById('message-input');
+// Agent elements
+const agentContainer = document.getElementById('agent-container');
+const statusIndicator = document.getElementById('status-indicator');
+const startStreamingButton = document.getElementById('start-streaming-button');
+const stopStreamingButton = document.getElementById('stop-streaming-button');
+const transcriptText = document.getElementById('transcript-text');
 
 let socket;
+let mediaRecorder;
+let audioContext;
+let audioQueue = [];
+let isPlaying = false;
 
+// 1. Connect to server with Firebase token
 connectButton.addEventListener('click', () => {
   const token = tokenInput.value;
   if (!token) {
     alert('Please enter a Firebase ID token.');
     return;
   }
-
   connectWebSocket(token);
 });
 
+// 2. Set up WebSocket connection
 function connectWebSocket(token) {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsHost = window.location.host;
@@ -29,64 +36,117 @@ function connectWebSocket(token) {
 
   socket.onopen = () => {
     authContainer.classList.add('hidden');
-    chatContainer.classList.remove('hidden');
-    displayMessage('system', 'Connected to the partner agent.');
+    agentContainer.classList.remove('hidden');
+    statusIndicator.textContent = 'Status: Connected';
+    startStreamingButton.disabled = false;
   };
 
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    switch (message.type) {
-      case 'gpt-response':
-        displayMessage('agent', message.data);
-        break;
-      case 'partner-search-results':
-        if (message.data.length > 0) {
-          let partnerList = 'Found partners:<br>';
-          message.data.forEach(p => {
-            partnerList += `- ${p.name} (Expertise: ${p.expertise})<br>`;
-          });
-          displayMessage('system', partnerList);
-        } else {
-          displayMessage('system', 'No partners found matching your criteria.');
+  socket.onmessage = async (event) => {
+    if (typeof event.data === 'string') {
+        const message = JSON.parse(event.data);
+        if (message.type === 'transcript') {
+            transcriptText.textContent = message.data;
+        } else if (message.type === 'error') {
+            console.error('Server error:', message.data);
+            statusIndicator.textContent = `Error: ${message.data}`;
         }
-        break;
-      case 'error':
-        displayMessage('error', message.data);
-        break;
+    } else if (event.data instanceof Blob) {
+        // Handle incoming audio blob
+        const audioData = await event.data.arrayBuffer();
+        audioQueue.push(audioData);
+        if (!isPlaying) {
+            playNextInQueue();
+        }
     }
   };
 
   socket.onclose = (event) => {
-    if (!chatContainer.classList.contains('hidden')) {
-        authContainer.classList.remove('hidden');
-        chatContainer.classList.add('hidden');
-    }
-    const reason = event.reason || 'Connection closed.';
-    alert(`Connection closed: ${reason} (Code: ${event.code})`);
-    displayMessage('error', `Connection closed. Please refresh and try again.`);
+    statusIndicator.textContent = 'Status: Disconnected';
+    alert(`Connection closed: ${event.reason} (Code: ${event.code})`);
+    stopStreaming();
+    authContainer.classList.remove('hidden');
+    agentContainer.classList.add('hidden');
   };
 
   socket.onerror = (error) => {
-    displayMessage('error', `WebSocket Error: ${error.message}. Please check the console.`);
+    console.error('WebSocket Error:', error);
+    statusIndicator.textContent = 'Status: Error';
   };
 }
 
-chatForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const message = messageInput.value;
-  if (message && socket && socket.readyState === WebSocket.OPEN) {
-    displayMessage('user', message);
-    socket.send(message);
-    messageInput.value = '';
-  } else {
-    alert('Not connected to the server.');
+// 3. Handle audio streaming
+startStreamingButton.addEventListener('click', async () => {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Your browser does not support audio recording.');
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Initialize AudioContext after user interaction
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0 && socket.readyState === WebSocket.OPEN) {
+        // Convert blob to base64 and send as JSON, as required by many realtime audio APIs
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64Audio = reader.result.split(',')[1];
+          socket.send(JSON.stringify({ type: 'audio_in', data: base64Audio }));
+        };
+        reader.readAsDataURL(event.data);
+      }
+    };
+
+    mediaRecorder.start(500); // Collect 500ms chunks of audio
+
+    startStreamingButton.disabled = true;
+    stopStreamingButton.disabled = false;
+    statusIndicator.textContent = 'Status: Streaming...';
+  } catch (error) {
+    console.error('Error accessing microphone:', error);
+    alert('Could not access microphone. Please grant permission.');
   }
 });
 
-function displayMessage(sender, text) {
-  const messageElement = document.createElement('div');
-  messageElement.classList.add('message', `${sender}-message`);
-  messageElement.innerHTML = text; // Using innerHTML to render line breaks from the server
-  messages.appendChild(messageElement);
-  chatWindow.scrollTop = chatWindow.scrollHeight;
+stopStreamingButton.addEventListener('click', () => {
+  stopStreaming();
+});
+
+function stopStreaming() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+    startStreamingButton.disabled = false;
+    stopStreamingButton.disabled = true;
+    statusIndicator.textContent = 'Status: Connected';
+}
+
+// 4. Play back audio from the server
+async function playNextInQueue() {
+    if (audioQueue.length === 0) {
+        isPlaying = false;
+        return;
+    }
+
+    isPlaying = true;
+    const audioData = audioQueue.shift();
+
+    try {
+        const audioBuffer = await audioContext.decodeAudioData(audioData);
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        source.onended = playNextInQueue; // Play next chunk when this one finishes
+        source.start();
+    } catch (e) {
+        console.error("Error decoding audio data", e);
+        isPlaying = false; // Stop playback on error
+    }
 }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GPT Partner Agent</title>
+  <title>GPT Live Audio Agent</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,14 +14,17 @@
     <button id="connect-button">Connect</button>
   </div>
 
-  <div id="chat-container" class="hidden">
-    <div id="chat-window">
-      <div id="messages"></div>
+  <div id="agent-container" class="hidden">
+    <h2>Live Audio Agent</h2>
+    <div id="status-indicator">Status: Disconnected</div>
+    <div id="controls">
+        <button id="start-streaming-button" disabled>Start Streaming</button>
+        <button id="stop-streaming-button" disabled>Stop Streaming</button>
     </div>
-    <form id="chat-form">
-      <input type="text" id="message-input" placeholder="Ask about our partners..." autocomplete="off">
-      <button type="submit">Send</button>
-    </form>
+    <div id="transcript-container">
+        <h3>Transcript:</h3>
+        <p id="transcript-text"></p>
+    </div>
   </div>
   <script src="main.js"></script>
 </body>
