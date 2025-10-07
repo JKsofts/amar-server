@@ -5,83 +5,86 @@ const WebSocket = require('ws');
 const path = require('path');
 const url = require('url');
 
-const { admin, db } = require('./src/firebase');
-const { getGptResponse } = require('./src/gpt');
+const { admin } = require('./src/firebase');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// This is a placeholder for the actual OpenAI Realtime API endpoint
+const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime/sessions';
+
+if (!OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is not set in the .env file.");
+}
+
 app.use(express.static(path.join(__dirname, 'public')));
 
-wss.on('connection', async (ws, req) => {
-  const { query } = url.parse(req.url, true);
-  const token = query.token;
+// Handle client connections
+wss.on('connection', async (clientWs, req) => {
+    const { query } = url.parse(req.url, true);
+    const token = query.token;
 
-  if (!token) {
-    console.log('Connection rejected: Missing token.');
-    ws.close(1008, 'Authentication failed: Token not provided.');
-    return;
-  }
+    // 1. Authenticate the client connection
+    try {
+        await admin.auth().verifyIdToken(token);
+        console.log('Client authenticated successfully.');
+    } catch (error) {
+        console.error('Client authentication failed:', error.message);
+        clientWs.close(1008, 'Authentication failed');
+        return;
+    }
 
-  try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    const uid = decodedToken.uid;
-    console.log(`Client connected and authenticated with UID: ${uid}`);
+    // 2. Create a new WebSocket connection to OpenAI's Realtime API
+    const openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
+        headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }
+    });
 
-    ws.on('message', async (message) => {
-      try {
-        const userQuery = message.toString();
-        console.log(`Received query from ${uid}: ${userQuery}`);
-
-        // Process the query with GPT
-        const gptResponse = await getGptResponse(userQuery);
-        ws.send(JSON.stringify({ type: 'gpt-response', data: gptResponse }));
-
-        // If the query is about finding a partner, search Firestore
-        if (userQuery.toLowerCase().includes('partner')) {
-          // A more robust way to extract expertise. A real solution could use NLP.
-          const expertiseMatch = userQuery.match(/partner with expertise in (.*)/i);
-          const expertise = expertiseMatch ? expertiseMatch[1].trim() : "";
-
-          if (expertise) {
-            const searchExpertise = expertise.toLowerCase();
-            console.log(`Searching for partners with expertise (case-insensitive): ${searchExpertise}`);
-            const partnersRef = db.collection('Partners');
-
-            // Use the pre-computed lowercase field for a case-insensitive search.
-            const snapshot = await partnersRef.where('expertise_lowercase', '==', searchExpertise).get();
-
-            if (snapshot.empty) {
-              console.log('No matching partners found.');
-              ws.send(JSON.stringify({ type: 'partner-search-results', data: [] }));
-            } else {
-                const partners = [];
-                snapshot.forEach(doc => {
-                  partners.push({ id: doc.id, ...doc.data() });
-                });
-                console.log(`Found ${partners.length} partner(s).`);
-                ws.send(JSON.stringify({ type: 'partner-search-results', data: partners }));
-            }
-          }
+    // 3. Proxy messages from our client to OpenAI
+    clientWs.on('message', (message) => {
+        if (openaiWs.readyState === WebSocket.OPEN) {
+            // Forward the message directly to OpenAI
+            openaiWs.send(message);
         }
-      } catch (error) {
-        console.error('Error processing message:', error);
-        ws.send(JSON.stringify({ type: 'error', data: 'An error occurred while processing your request.' }));
-      }
     });
 
-    ws.on('close', () => {
-      console.log(`Client disconnected: ${uid}`);
+    // 4. Proxy messages from OpenAI back to our client
+    openaiWs.on('message', (message) => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+            // Forward the message directly back to the client
+            clientWs.send(message);
+        }
     });
 
-  } catch (error) {
-    console.error('Authentication failed:', error.message);
-    ws.close(1008, 'Authentication failed');
-  }
+    // 5. Handle connection lifecycle
+    openaiWs.on('open', () => {
+        console.log('Proxy connection to OpenAI established.');
+    });
+
+    openaiWs.on('close', (code, reason) => {
+        console.log(`Proxy connection to OpenAI closed: ${reason} (${code})`);
+        if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.close(1000, 'Upstream service disconnected.');
+        }
+    });
+
+    openaiWs.on('error', (error) => {
+        console.error('Proxy connection to OpenAI error:', error.message);
+        if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.close(1011, 'Upstream service error.');
+        }
+    });
+
+    clientWs.on('close', (code, reason) => {
+        console.log(`Client connection closed: ${reason} (${code})`);
+        if (openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.close(1000, 'Client disconnected.');
+        }
+    });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server is listening on port ${PORT}`);
+    console.log(`Server is listening on port ${PORT}`);
 });
